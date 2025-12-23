@@ -181,6 +181,8 @@ All prompts are reported in LLMs-specific scripts in `runnables` folder.
 ## Annotation Study Guidelines
 We report annotation guidelines for SAM and GCAM used for the subjectivity detection case study in `annotations` folder.
 
+Run ``runnables/compute_annotation_iaa.py`` to compute IAA.
+
 ## Contact
 
 TBA
