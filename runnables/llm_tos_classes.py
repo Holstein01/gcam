@@ -9,21 +9,14 @@ import torch as th
 from torch.utils.data import DataLoader, Dataset
 from torchmetrics.classification.f_beta import F1Score
 from tqdm.auto import tqdm
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 
 class PromptDataset(Dataset):
-
-    def __init__(
-            self,
-            prompts
-    ):
+    def __init__(self, prompts):
         self.prompts = prompts
 
-    def __getitem__(
-            self,
-            item
-    ):
+    def __getitem__(self, item):
         return self.prompts[item]
 
     def __len__(self):
@@ -31,78 +24,99 @@ class PromptDataset(Dataset):
 
 
 def process_response(response):
-    return response[response.find('ANSWER:') + len('ANSWER:'):].strip()
+    return response[response.find("ANSWER:") + len("ANSWER:") :].strip()
 
 
 def convert_response(response):
-    return 1 if 'yes' in response.casefold() else 0
+    return 1 if "yes" in response.casefold() else 0
 
 
 def parse_batch(batch, tokenizer):
-    return tokenizer.batch_encode_plus(batch, return_tensors='pt', padding=True, truncation=True)
+    return tokenizer.batch_encode_plus(
+        batch, return_tensors="pt", padding=True, truncation=True
+    )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     parser = ArgumentParser()
-    parser.add_argument('--category', '-c', default='CR', type=str, help='A | CH | CR | LTD | TER')
-    parser.add_argument('--model',
-                        '-m',
-                        default='mistral',
-                        type=str,
-                        nargs='?',
-                        choices=['mistral', 'llama', 'phi'])
+    parser.add_argument(
+        "--category", "-c", default="CR", type=str, help="A | CH | CR | LTD | TER"
+    )
+    parser.add_argument(
+        "--model",
+        "-m",
+        default="mistral",
+        type=str,
+        nargs="?",
+        choices=["mistral", "llama", "phi", "qwen"],
+    )
+    parser.add_argument(
+        "--limit",
+        "-l",
+        default=None,
+        type=int,
+        help="Smoke test: use only first N test examples",
+    )
     args = parser.parse_args()
     category = args.category
     model_name = args.model
 
     batch_size = 1
 
-    save_path = Path(__file__).parent.parent.resolve().joinpath('results', 'tos', f'{model_name}_{category}')
+    save_path = (
+        Path(__file__)
+        .parent.parent.resolve()
+        .joinpath("results", "tos", f"{model_name}_{category}")
+    )
     if not save_path.exists():
         save_path.mkdir(parents=True)
 
-    data_dir = Path(__file__).parent.parent.resolve().joinpath('data', 'tos')
-    data = pd.read_csv(data_dir.joinpath('dataset_100.csv'))
-    documents = data['document_ID'].unique()
+    data_dir = Path(__file__).parent.parent.resolve().joinpath("data", "tos")
+    data = pd.read_csv(data_dir.joinpath("dataset_100.csv"))
+    documents = data["document_ID"].unique()
     test_documents = documents[90:]
-    test_data = data[data['document_ID'].isin(test_documents)]
+    test_data = data[data["document_ID"].isin(test_documents)]
+    if args.limit is not None:
+        test_data = test_data.head(args.limit).copy()
     y_true = test_data[category].values
 
-    guidelines_path = data_dir.joinpath(f'{category}_KB.txt')
+    guidelines_path = data_dir.joinpath(f"{category}_KB.txt")
     guidelines = []
-    with open(guidelines_path, 'r') as f:
+    with open(guidelines_path, "r") as f:
         for line in f:
             guidelines.append(line)
 
     model_map = {
-        'mistral': "mistralai/Mistral-7B-Instruct-v0.3",
-        'llama': "meta-llama/Meta-Llama-3.1-8B-Instruct",
-        'phi': "microsoft/Phi-3-mini-4k-instruct"
+        "mistral": "mistralai/Mistral-7B-Instruct-v0.3",
+        "llama": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+        "phi": "microsoft/Phi-3-mini-4k-instruct",
+        "qwen": "Qwen/Qwen2.5-7B-Instruct",
     }
 
     model_id = model_map[model_name]
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     tokenizer.pad_token = tokenizer.eos_token
 
-    terminators = [
+    """terminators = [
         tokenizer.eos_token_id,
         tokenizer.convert_tokens_to_ids("<|eot_id|>")
-    ]
+    ]"""
 
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=th.bfloat16,
+        bnb_4bit_compute_dtype=th.float16,
     )
 
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         return_dict=True,
         quantization_config=bnb_config,
-        device_map='auto'
+        torch_dtype=th.float16,
+        device_map="auto",
     )
 
     generation_config = model.generation_config
@@ -110,19 +124,26 @@ if __name__ == '__main__':
     generation_config.eos_token_id = tokenizer.eos_token_id
     generation_config.pad_token_id = tokenizer.eos_token_id
     generation_config.temperature = None
+    generation_config.top_p = None
+    generation_config.top_k = None
+    generation_config.repetition_penalty = 1.0
     generation_config.num_return_sequences = 1
 
-    guidelines_str = '\n'.join(
-        [f'ID: G{idx + 1}  DEF: {definition}' for idx, definition in enumerate(guidelines)])
+    guidelines_str = "\n".join(
+        [
+            f"ID: G{idx + 1}  DEF: {definition}"
+            for idx, definition in enumerate(guidelines)
+        ]
+    )
 
     prompt = [
         {
-            'role': 'system',
-            'content': 'You are an annotator for unfair clause detection in the legal domain concerning consumer contracts.'
+            "role": "system",
+            "content": "You are an annotator for unfair clause detection in the legal domain concerning consumer contracts.",
         },
         {
-            'role': 'user',
-            'content': """Your are given a GUIDELINE SET about consumer contract unfairness for the user or client.
+            "role": "user",
+            "content": """Your are given a GUIDELINE SET about consumer contract unfairness for the user or client.
             Each GUIDELINE SET item in the set is described by an identifier (ID) and a definition (DEF).
             Read carefully the GUIDELINE SET.
             Your task is to classify input TEXT as containing an unfair clause for the user or client.
@@ -135,41 +156,49 @@ if __name__ == '__main__':
             {text}
             
             ANSWER:
-            """
-        }
+            """,
+        },
     ]
-    prompt = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+    prompt = tokenizer.apply_chat_template(
+        prompt, tokenize=False, add_generation_prompt=True
+    )
 
     texts = test_data.text.values.tolist()
     prompts = [prompt.format(text=text, guideline=guidelines_str) for text in texts]
     prompt_data = PromptDataset(prompts=prompts)
-    prompt_loader = DataLoader(prompt_data,
-                               batch_size=batch_size,
-                               shuffle=False,
-                               collate_fn=partial(parse_batch, tokenizer=tokenizer))
+    prompt_loader = DataLoader(
+        prompt_data,
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=partial(parse_batch, tokenizer=tokenizer),
+    )
 
     raw_responses = []
     parsed_responses = []
     with th.inference_mode():
         for batch in tqdm(prompt_loader, desc="Generating responses"):
+            input_ids = batch["input_ids"].to(model.device)
             response = model.generate(
-                input_ids=batch['input_ids'].to(model.device),
-                attention_mask=batch['attention_mask'].to(model.device),
+                input_ids=input_ids,
+                attention_mask=batch["attention_mask"].to(model.device),
                 generation_config=generation_config,
                 do_sample=False,
-                use_cache=True
+                use_cache=True,
             )
-            raw_response = tokenizer.batch_decode(response, skip_special_tokens=True)
-            raw_response = [process_response(item) for item in raw_response]
+            new_tokens = response[:, input_ids.shape[1] :]
+            raw_response = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
+            raw_response = [item.strip() for item in raw_response]
             raw_responses.extend(raw_response)
-            parsed_response = [convert_response(item) for item in raw_response]
+            parsed_response = [
+                convert_response(item) for item in raw_response
+            ]  # guidelines: convert_response(item, num_labels=num_labels)
             parsed_responses.extend(parsed_response)
 
-    test_data['raw_response'] = raw_responses
-    test_data['parsed_response'] = parsed_responses
-    test_data.to_csv(save_path.joinpath('response_classes.csv'), index=False)
+    test_data["raw_response"] = raw_responses
+    test_data["parsed_response"] = parsed_responses
+    test_data.to_csv(save_path.joinpath("response_classes.csv"), index=False)
 
-    metric = F1Score(task='multiclass', average='macro', num_classes=2)
+    metric = F1Score(task="multiclass", average="macro", num_classes=2)
     f1_score = metric(th.tensor(parsed_responses), th.tensor(y_true))
-    print('F1: ', f1_score)
-    np.save(save_path.joinpath('metrics_classes.npy').as_posix(), f1_score)
+    print("F1: ", f1_score)
+    np.save(save_path.joinpath("metrics_classes.npy").as_posix(), f1_score)

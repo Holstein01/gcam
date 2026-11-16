@@ -96,7 +96,9 @@ if __name__ == '__main__':
                         default='mistral',
                         type=str,
                         nargs='?',
-                        choices=['mistral', 'llama', 'phi'])
+                        choices=['mistral', 'llama', 'phi', 'qwen'])
+    parser.add_argument('--limit', '-l', default=None, type=int,
+                        help='Smoke test: use only first N test examples')
     parser.add_argument('--force', '-f', default=False, type=bool)
     args = parser.parse_args()
     category = args.category
@@ -113,6 +115,8 @@ if __name__ == '__main__':
     documents = data['document_ID'].unique()
     test_documents = documents[90:]
     test_data = data[data['document_ID'].isin(test_documents)]
+    if args.limit is not None:
+        test_data = test_data.head(args.limit).copy()
 
     guidelines_path = data_dir.joinpath(f'{category}_KB.txt')
     guidelines = []
@@ -130,7 +134,8 @@ if __name__ == '__main__':
         model_map = {
             'mistral': "mistralai/Mistral-7B-Instruct-v0.3",
             'llama': "meta-llama/Meta-Llama-3.1-8B-Instruct",
-            'phi': "microsoft/Phi-3-mini-4k-instruct"
+            'phi': "microsoft/Phi-3-mini-4k-instruct",
+            'qwen': "Qwen/Qwen2.5-7B-Instruct"
         }
 
         model_id = model_map[model_name]
@@ -141,13 +146,14 @@ if __name__ == '__main__':
             load_in_4bit=True,
             bnb_4bit_use_double_quant=True,
             bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=th.bfloat16,
+            bnb_4bit_compute_dtype=th.float16,
         )
 
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
             return_dict=True,
             quantization_config=bnb_config,
+            torch_dtype=th.float16,
             device_map='auto'
         )
 
@@ -156,6 +162,9 @@ if __name__ == '__main__':
         generation_config.eos_token_id = tokenizer.eos_token_id
         generation_config.pad_token_id = tokenizer.eos_token_id
         generation_config.temperature = None
+        generation_config.top_p = None
+        generation_config.top_k = None
+        generation_config.repetition_penalty = 1.0
         generation_config.num_return_sequences = 1
 
         guidelines_str = '\n'.join(
@@ -200,14 +209,16 @@ if __name__ == '__main__':
         parsed_responses = []
         with th.inference_mode():
             for batch in tqdm(prompt_loader, desc="Generating responses"):
+                input_ids=batch['input_ids'].to(model.device)
                 response = model.generate(
-                    input_ids=batch['input_ids'].to(model.device),
+                    input_ids=input_ids,
                     attention_mask=batch['attention_mask'].to(model.device),
                     generation_config=generation_config,
                     do_sample=False,
                     use_cache=True
                 )
-                raw_response = tokenizer.batch_decode(response, skip_special_tokens=True)
+                new_tokens = response[:, input_ids.shape[1]:]
+                raw_response = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
                 raw_response = [process_response(item) for item in raw_response]
                 raw_responses.extend(raw_response)
                 parsed_response = [convert_response(item, num_labels=num_labels) for item in raw_response]
