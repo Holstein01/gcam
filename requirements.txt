@@ -14,3 +14,4 @@ torchmetrics~=1.4.1
 torchdata~=0.8.0
 matplotlib~=3.9.2
 datasets~=3.1.0
+bitsandbytes>=0.43.3
