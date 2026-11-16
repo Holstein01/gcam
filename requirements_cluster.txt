@@ -1,0 +1,10 @@
+torch~=2.4.1
+accelerate==0.34.2
+transformers~=4.44.2
+numpy~=1.26.4
+pandas~=2.2.2
+tqdm~=4.66.5
+scikit-learn~=1.5.2
+torchmetrics~=1.4.1
+matplotlib~=3.9.2
+bitsandbytes>=0.43.3
